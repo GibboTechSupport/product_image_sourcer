@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+product_images/
+uploads/
+*.log
+image_sourcing_log.csv
+.DS_Store
+.env

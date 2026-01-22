@@ -1,0 +1,8 @@
+flask
+pandas
+requests
+rapidfuzz
+duckduckgo-search
+fake-useragent
+beautifulsoup4
+openpyxl

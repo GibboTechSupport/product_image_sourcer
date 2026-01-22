@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product Image Sourcer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-camera-retro"></i> Image Sourcer</h1>
+            <p>Drag, Drop, and Scrape High-Quality Images</p>
+        </header>
+
+        <div class="card glass-panel upload-section">
+            <div id="drop-zone" class="drop-zone">
+                <i class="fas fa-cloud-upload-alt"></i>
+                <h3>Drag & Drop CSV/Excel here</h3>
+                <p>or click to browse</p>
+                <input type="file" id="file-input" hidden accept=".csv, .xlsx, .xls">
+            </div>
+        </div>
+
+        <div class="card glass-panel control-panel hidden" id="control-panel">
+            <div class="input-group" style="margin-bottom: 1rem;">
+                <label for="output-dir"
+                    style="display: block; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-muted);">Download
+                    Location (Optional):</label>
+                <input type="text" id="output-dir" placeholder="e.g. C:\Users\YourName\Desktop\Images"
+                    class="glass-input">
+            </div>
+            <div class="progress-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <div class="stats">
+                <span id="progress-text">0 / 0</span>
+                <button id="start-btn" class="btn primary">Start Sourcing <i class="fas fa-play"></i></button>
+                <button id="stop-btn" class="btn danger hidden">Stop <i class="fas fa-stop"></i></button>
+            </div>
+        </div>
+
+        <div class="list-container hidden" id="list-container">
+            <ul id="item-list">
+                <!-- Items injected here -->
+            </ul>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+
+</html>
