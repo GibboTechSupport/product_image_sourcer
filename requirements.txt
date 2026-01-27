@@ -6,3 +6,4 @@ duckduckgo-search
 fake-useragent
 beautifulsoup4
 openpyxl
+python-dotenv

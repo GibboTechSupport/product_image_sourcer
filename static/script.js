@@ -167,6 +167,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let processedCount = 0;
         const outputDir = document.getElementById('output-dir').value;
+        const uploadToWordpress = document.getElementById('wp-toggle').checked;
 
         try {
             const response = await fetch('/api/process', {
@@ -174,7 +175,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     items: items,
-                    output_dir: outputDir
+                    output_dir: outputDir,
+                    upload_to_wordpress: uploadToWordpress
                 }),
                 signal: signal
             });
@@ -194,7 +196,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         try {
                             const data = JSON.parse(line.substring(6));
                             updateItemStatus(data);
-                            if (data.Status === 'Success' || data.Status === 'Failed' || data.Status === 'Skipped') {
+                            if (data.Status === 'Success' || data.Status === 'Failed' || data.Status === 'Skipped' || data.Status === 'Assigned' || data.Status === 'Skipped (Duplicate)') {
                                 processedCount++;
                                 updateProgress(processedCount);
                             }
@@ -226,25 +228,33 @@ document.addEventListener('DOMContentLoaded', () => {
             badge.textContent = data.Status;
             badge.className = 'status-badge';
 
-            if (data.Status === 'Success') {
+            if (data.Status === 'Success' || data.Status === 'Assigned') {
                 badge.classList.add('success');
-                badge.innerHTML = 'Success';
+                badge.innerHTML = data.Status;
             }
             else if (data.Status === 'Failed') {
                 badge.classList.add('failed');
                 badge.innerHTML = 'Failed';
             }
-            else if (data.Status === 'Skipped') {
+            else if (data.Status === 'Skipped' || data.Status === 'Skipped (Duplicate)') {
                 badge.classList.add('skipped');
-                badge.innerHTML = 'Skipped';
+                badge.innerHTML = data.Status;
             }
-            else if (data.Status === 'Downloading' || data.Status === 'Searching') {
+            else if (data.Status === 'Downloading' || data.Status === 'Searching' || data.Status === 'Checking WordPress') {
                 badge.classList.add('in-progress');
                 badge.innerHTML = `<span class="spinner"></span> ${data.Status}`;
             }
+            else if (data.Status === 'Uploading to WordPress' || data.Status === 'Assigning Image') {
+                badge.classList.add('uploading');
+                badge.innerHTML = `<span class="spinner"></span> ${data.Status}`;
+            }
+            else if (data.Status === 'Uploaded') {
+                badge.classList.add('success');
+                badge.innerHTML = '<i class="fab fa-wordpress"></i> Uploaded';
+            }
             else if (data.Status === 'Waiting') {
                 badge.classList.add('pending');
-                badge.innerHTML = `<i class="fas fa-clock"></i> Cooling down...`;
+                badge.innerHTML = `<i class="fas fa-check"></i> ${data.Message || 'downloaded'}`;
             }
             else {
                 badge.classList.add('in-progress');

@@ -36,17 +36,26 @@ def upload_file():
             df.columns = [c.strip() for c in df.columns]
             
             # Check for required columns (case-insensitive)
-            # We map them to standard 'SKU' and 'Name'
+            # SKU is required, Name is optional
             col_map = {c.lower(): c for c in df.columns}
-            if 'sku' not in col_map or 'name' not in col_map:
-                return jsonify({'error': 'Missing required columns: SKU, Name'}), 400
+            if 'sku' not in col_map:
+                return jsonify({'error': 'Missing required column: SKU'}), 400
             
             # Extract items
             items = []
+            img_col = col_map.get('images') or col_map.get('image')
             for _, row in df.iterrows():
+                name = str(row[col_map['name']]) if 'name' in col_map else ""
+                has_image = False
+                if img_col:
+                    img_val = str(row[img_col]).strip()
+                    if img_val and img_val.lower() != 'nan':
+                        has_image = True
+                
                 items.append({
                     'SKU': str(row[col_map['sku']]),
-                    'Name': str(row[col_map['name']])
+                    'Name': name,
+                    'HasImage': has_image
                 })
                 
             return jsonify({'items': items})
@@ -59,6 +68,7 @@ def process():
     data = request.json
     items = data.get('items', [])
     output_dir = data.get('output_dir', '').strip()
+    upload_to_wordpress = data.get('upload_to_wordpress', False)
     
     # Use default if empty
     if not output_dir:
@@ -69,7 +79,7 @@ def process():
 
     def generate():
         # Iterate over results from image_sourcer generator
-        for result in process_items(items, output_dir=output_dir):
+        for result in process_items(items, output_dir=output_dir, upload_to_wordpress=upload_to_wordpress):
             # Send as SSE
             yield f"data: {json.dumps(result)}\n\n"
     

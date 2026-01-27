@@ -12,6 +12,13 @@ import json
 from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 
+# WordPress API integration
+try:
+    import wordpress_api
+    WP_AVAILABLE = True
+except ImportError:
+    WP_AVAILABLE = False
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[
     logging.FileHandler("image_sourcer.log"),
@@ -68,14 +75,17 @@ def search_bing(query, ua):
 def find_and_save_image(product_name, sku, ua, output_dir=OUTPUT_DIR):
     yield {'SKU': sku, 'Name': product_name, 'Status': 'Searching', 'Message': 'Starting search...'}
     
+    # Sanitize product name for search query: remove * and after, trim
+    search_query = product_name.split('*')[0].strip()
+
     # Retry Strategies
     # 1. DDG Standard
     # 2. Bing Standard (Fallback)
     # 3. DDG Broad (Backup)
     strategies = [
-        {'engine': 'ddg', 'query': f"{product_name} {sku} product image", 'desc': 'DuckDuckGo (Standard)'},
-        {'engine': 'bing', 'query': f"{product_name} {sku}", 'desc': 'Bing Images (Fallback)'},
-        {'engine': 'ddg', 'query': f"{product_name} product image", 'desc': 'DuckDuckGo (Broad Match)'}
+        {'engine': 'ddg', 'query': search_query, 'desc': 'DuckDuckGo (Standard)'},
+        {'engine': 'bing', 'query': search_query, 'desc': 'Bing Images (Fallback)'},
+        {'engine': 'ddg', 'query': search_query, 'desc': 'DuckDuckGo (Broad Match)'}
     ]
 
     for attempt, strategy in enumerate(strategies, 1):
@@ -114,12 +124,17 @@ def find_and_save_image(product_name, sku, ua, output_dir=OUTPUT_DIR):
                  continue
             
             # Fuzzy Match at 80%
-            score = fuzz.partial_ratio(product_name.lower(), image_title.lower())
+            score = fuzz.partial_ratio(product_name.lower(), image_title.lower()) if product_name else 100
             
-            if score >= 80:
-                logging.info(f"  Match Found ({score}%). Downloading...")
+            if score >= 80 or not product_name:
+                if not product_name:
+                    logging.info(f"  No product name provided. Using first result for {sku}.")
+                else:
+                    logging.info(f"  Match Found ({score}%). Downloading...")
+                
                 try:
-                    yield {'SKU': sku, 'Name': product_name, 'Status': 'Downloading', 'Message': f"Downloading (Score: {score}%)"}
+                    status_msg = f"Downloading (SKU: {sku})" if not product_name else f"Downloading (Score: {score}%)"
+                    yield {'SKU': sku, 'Name': product_name, 'Status': 'Downloading', 'Message': status_msg}
                     
                     # Random delay before download
                     time.sleep(random.uniform(1, 3))
@@ -127,10 +142,11 @@ def find_and_save_image(product_name, sku, ua, output_dir=OUTPUT_DIR):
                     headers = {"User-Agent": ua.random}
                     img_data = requests.get(image_url, headers=headers, timeout=30).content
                     
-                    filename = f"{clean_filename(product_name)}.jpg"
+                    base_name = clean_filename(product_name) if product_name else sku
+                    filename = f"{base_name}.jpg"
                     filepath = os.path.join(output_dir, filename)
                     if os.path.exists(filepath):
-                            filename = f"{clean_filename(product_name)}_{sku}.jpg"
+                            filename = f"{base_name}_{sku}.jpg"
                             filepath = os.path.join(output_dir, filename)
 
                     with open(filepath, 'wb') as handler:
@@ -138,7 +154,7 @@ def find_and_save_image(product_name, sku, ua, output_dir=OUTPUT_DIR):
                     
                     # Success - Yield final result and Return (stop other strategies)
                     # We return the dictionary here to signal completion of this item
-                    yield {'SKU': sku, 'status': 'Success', 'score': score, 'file': filename, 'url': image_url, 'Name': product_name, 'Status': 'Success'}
+                    yield {'SKU': sku, 'status': 'Success', 'score': score if product_name else 100, 'file': filename, 'url': image_url, 'Name': product_name, 'Status': 'Success'}
                     return
                 except Exception as e:
                     logging.warning(f"  Download failed: {e}")
@@ -163,16 +179,17 @@ def main(dry_run=False):
         return
 
     # Check for required columns
-    required_cols = ['SKU', 'Name']
+    required_cols = ['SKU']
     for col in required_cols:
         if col not in df.columns:
             logging.error(f"Missing required column: {col}")
             return
 
-def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR):
+def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR, upload_to_wordpress=False):
     """
     Generator that processes a list of items and yields results.
     items: list of dicts [{'SKU': '...', 'Name': '...'}, ...]
+    upload_to_wordpress: if True, upload to WP after download
     """
     # Ensure output directory exists
     if output_dir and not os.path.exists(output_dir):
@@ -202,16 +219,25 @@ def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR):
         sku = str(row.get('SKU', '')).strip()
         name = str(row.get('Name', '')).strip()
         
-        # Skip if already processed
-        if sku in processed_skus:
-            # Yield a skipped status so UI knows (optional, or just ignore)
-            yield {'SKU': sku, 'Name': name, 'Status': 'Skipped', 'Message': 'Already processed'}
+        has_existing_image = row.get('HasImage', False)
+        
+        # Filesystem check - look for sku.jpg or name.jpg
+        # We check both to be safe
+        possible_filenames = [f"{sku}.jpg", f"{clean_filename(name)}.jpg" if name else None]
+        for pf in possible_filenames:
+            if pf and os.path.exists(os.path.join(output_dir, pf)):
+                has_existing_image = True
+                break
+
+        # Skip if already processed (log) or has existing image (CSV/Disk)
+        if sku in processed_skus or has_existing_image:
+            reason = 'Already processed in log' if sku in processed_skus else 'Image already exists'
+            yield {'SKU': sku, 'Name': name, 'Status': 'Skipped', 'Message': reason}
             continue
 
         if not name or name.lower() == 'nan':
-            logging.warning(f"Skipping row {index}: Missing Name")
-            yield {'SKU': sku, 'Name': name, 'Status': 'Skipped', 'Message': 'Missing Name'}
-            continue
+            logging.info(f"Row {index}: Missing Name, will search by SKU {sku} only")
+            name = ""
 
         # Pass user agent instance
         # process generator
@@ -229,6 +255,56 @@ def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR):
              final_result = {'SKU': sku, 'Name': name, 'Status': 'Failed', 'Message': 'Unknown error'}
              yield final_result
 
+        # WordPress integration after successful download
+        wp_media_id = None
+        wp_status = 'Not Uploaded'
+        wp_duplicate = False
+        
+        if upload_to_wordpress and WP_AVAILABLE and final_result.get('Status') == 'Success':
+            filepath = os.path.join(output_dir, final_result.get('file', ''))
+            filename = final_result.get('file', '')
+            
+            # Check for duplicate in WordPress
+            yield {'SKU': sku, 'Name': name, 'Status': 'Checking WordPress', 'Message': 'Checking for duplicates...'}
+            existing_id = wordpress_api.check_duplicate(sku, filename)
+            
+            if existing_id:
+                # Duplicate found - reuse existing media
+                wp_media_id = existing_id
+                wp_status = 'Skipped (Duplicate)'
+                wp_duplicate = True
+                yield {'SKU': sku, 'Name': name, 'Status': 'Skipped (Duplicate)', 'Message': f'Reusing media ID {existing_id}'}
+            else:
+                # Upload to WordPress
+                yield {'SKU': sku, 'Name': name, 'Status': 'Uploading to WordPress', 'Message': 'Uploading...'}
+                wp_media_id = wordpress_api.upload_media(
+                    filepath,
+                    title=name or sku,
+                    alt_text=name or sku,
+                    caption=name or sku,
+                    description=f'Product image for {name or sku}'
+                )
+                
+                if wp_media_id:
+                    wp_status = 'Uploaded'
+                    
+                    # Find and assign to product
+                    yield {'SKU': sku, 'Name': name, 'Status': 'Assigning Image', 'Message': 'Finding product...'}
+                    post_id = wordpress_api.find_product_post(sku, name)
+                    
+                    if post_id:
+                        if wordpress_api.set_featured_image(post_id, wp_media_id):
+                            wp_status = 'Assigned'
+                            yield {'SKU': sku, 'Name': name, 'Status': 'Assigned', 'Message': f'Assigned to product {post_id}'}
+                        else:
+                            wp_status = 'Upload OK, Assign Failed'
+                    else:
+                        wp_status = 'Uploaded (No Product Found)'
+                        yield {'SKU': sku, 'Name': name, 'Status': 'Uploaded', 'Message': 'No matching product found'}
+                else:
+                    wp_status = 'Upload Failed'
+                    yield {'SKU': sku, 'Name': name, 'Status': 'Failed', 'Message': 'WordPress upload failed'}
+
         # Immediate logging to file for robustness
         log_entry = {
             'SKU': sku,
@@ -236,7 +312,10 @@ def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR):
             'Similarity Score': final_result.get('score', 0),
             'Image Source URL': final_result.get('url', ''),
             'Saved Filename': final_result.get('file', ''),
-            'Status': final_result['Status']
+            'Status': final_result['Status'],
+            'WP Media ID': wp_media_id or '',
+            'WP Upload Status': wp_status,
+            'WP Duplicate': wp_duplicate
         }
         
         # Append to CSV immediately
@@ -250,7 +329,7 @@ def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR):
         # Polite randomized delay between SKUs (3-7s)
         delay = random.uniform(3, 7)
         # Yield a status update about the delay
-        yield {'SKU': sku, 'Name': name, 'Status': 'Waiting', 'Message': f"Cooling down..."}
+        yield {'SKU': sku, 'Name': name, 'Status': 'Waiting', 'Message': "downloaded"}
         logging.info(f"Sleeping for {delay:.2f} seconds...")
         time.sleep(delay)
 
@@ -262,7 +341,7 @@ def main(dry_run=False):
         return
 
     # Check for required columns
-    required_cols = ['SKU', 'Name']
+    required_cols = ['SKU']
     for col in required_cols:
         if col not in df.columns:
             logging.error(f"Missing required column: {col}")
