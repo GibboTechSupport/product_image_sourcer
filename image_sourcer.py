@@ -205,12 +205,14 @@ def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR, upload
     processed_skus = set()
     if os.path.exists(audit_log_path):
         try:
-            existing_log = pd.read_csv(audit_log_path)
+            # Try reading with flexible column handling
+            existing_log = pd.read_csv(audit_log_path, on_bad_lines='skip')
             if 'SKU' in existing_log.columns:
                 processed_skus = set(existing_log['SKU'].astype(str).str.strip())
             logging.info(f"Resuming... {len(processed_skus)} SKUs already processed.")
         except Exception as e:
             logging.warning(f"Could not read existing log file, starting fresh. Error: {e}")
+
 
     # Initialize UserAgent
     ua = UserAgent()
