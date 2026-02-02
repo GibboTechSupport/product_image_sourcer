@@ -35,6 +35,36 @@ if not os.path.exists(OUTPUT_DIR):
 def clean_filename(text):
     return re.sub(r'[^\w\s-]', '', str(text)).strip().replace(' ', '_')
 
+
+
+
+def search_google(query, ua):
+    """Fallback search using Google Images scraping."""
+    headers = {"User-Agent": ua.random}
+    url = f"https://www.google.com/search?tbm=isch&q={query} "
+
+
+    logging.info(f"  Fallback: Searching Google for '{query}'...")
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        results = []
+        # Google usually puts metadata in 'data-src' or 'src' attributes of 'img' tags
+        for img in soup.find_all('img'):
+            link = img.get('data-src') or img.get('src')
+            title = img.get('alt')
+            if link and title:
+                results.append({'image': link, 'title': title})
+            
+            if len(results) >= 5:
+                break
+                
+        return results
+    except Exception as e:
+        logging.error(f"  Google search failed: {e}")
+        return []
+
 def search_bing(query, ua):
     """Fallback search using Bing Images scraping."""
     headers = {"User-Agent": ua.random}
@@ -76,7 +106,7 @@ def find_and_save_image(product_name, sku, ua, output_dir=OUTPUT_DIR):
     yield {'SKU': sku, 'Name': product_name, 'Status': 'Searching', 'Message': 'Starting search...'}
     
     # Sanitize product name for search query: remove * and after, trim
-    search_query = product_name.split('*')[0].strip()
+    search_query = product_name.split('*, %')[0].strip()
 
     # Retry Strategies
     # 1. DDG Standard
@@ -85,6 +115,7 @@ def find_and_save_image(product_name, sku, ua, output_dir=OUTPUT_DIR):
     strategies = [
         {'engine': 'ddg', 'query': search_query, 'desc': 'DuckDuckGo (Standard)'},
         {'engine': 'bing', 'query': search_query, 'desc': 'Bing Images (Fallback)'},
+        {'engine': 'google', 'query': search_query, 'desc': 'Google Images (Fallback)'},
         {'engine': 'ddg', 'query': search_query, 'desc': 'DuckDuckGo (Broad Match)'}
     ]
 
