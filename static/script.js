@@ -184,6 +184,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
+    
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
@@ -196,9 +197,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         try {
                             const data = JSON.parse(line.substring(6));
                             updateItemStatus(data);
-                            if (data.Status === 'Success' || data.Status === 'Failed' || data.Status === 'Skipped' || data.Status === 'Assigned' || data.Status === 'Skipped (Duplicate)') {
+                            if (data.Status === 'Success' || data.Status === 'Failed' || data.Status === 'Skipped' || data.Status === 'Assigned' || data.Status === 'Skipped (Duplicate)' || data.Status === 'Uploaded' || data.Status === 'No Image Found') {
                                 processedCount++;
-                                updateProgress(processedCount);
+                                updateProgress(processedCount); 
                             }
                         } catch (e) {
                             console.error('Error parsing SSE:', e);
@@ -252,9 +253,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 badge.classList.add('success');
                 badge.innerHTML = '<i class="fab fa-wordpress"></i> Uploaded';
             }
-            else if (data.Status === 'Waiting') {
-                badge.classList.add('pending');
-                badge.innerHTML = `<i class="fas fa-check"></i> ${data.Message || 'downloaded'}`;
+            else if (data.Status === 'No Image Found') {
+                badge.classList.add('failed');
+                badge.innerHTML = `<i class="fas fa-check"></i> ${data.Message || 'No Image Found'}`;
             }
             else {
                 badge.classList.add('in-progress');
