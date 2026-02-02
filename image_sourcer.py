@@ -207,9 +207,14 @@ def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR, upload
         try:
             # Try reading with flexible column handling
             existing_log = pd.read_csv(audit_log_path, on_bad_lines='skip')
-            if 'SKU' in existing_log.columns:
+            if 'SKU' in existing_log.columns and 'Status' in existing_log.columns:
+                # Only skip SKUs that were successfully processed
+                success_mask = existing_log['Status'] == 'Success'
+                processed_skus = set(existing_log.loc[success_mask, 'SKU'].astype(str).str.strip())
+            elif 'SKU' in existing_log.columns:
+                # Fallback if Status column missing (legacy logs)
                 processed_skus = set(existing_log['SKU'].astype(str).str.strip())
-            logging.info(f"Resuming... {len(processed_skus)} SKUs already processed.")
+            logging.info(f"Resuming... {len(processed_skus)} SKUs already successfully processed.")
         except Exception as e:
             logging.warning(f"Could not read existing log file, starting fresh. Error: {e}")
 
@@ -357,6 +362,30 @@ def main(dry_run=False):
         print(f"Processed {result['SKU']}: {result['Status']}")
 
     logging.info(f"Process complete.")
+
+    # Generate enhanced CSV with URLs
+    try:
+        logging.info("Generating input_with_urls.csv...")
+        # Read the latest log
+        if os.path.exists(AUDIT_LOG):
+            log_df = pd.read_csv(AUDIT_LOG)
+            # Deduplicate log, keeping last attempt for each SKU
+            log_df = log_df.drop_duplicates(subset=['SKU'], keep='last')
+            
+            # Merge with original input
+            # Ensure SKU columns are strings for merging
+            df['SKU'] = df['SKU'].astype(str).str.strip()
+            log_df['SKU'] = log_df['SKU'].astype(str).str.strip()
+            
+            # Merge: Left join to keep all input rows
+            merged_df = pd.merge(df, log_df[['SKU', 'Image Source URL', 'Saved Filename', 'Status']], on='SKU', how='left')
+            
+            merged_df.to_csv('input_with_urls.csv', index=False)
+            logging.info("Successfully created 'input_with_urls.csv' with image data.")
+        else:
+            logging.warning("No audit log found, cannot generate input_with_urls.csv")
+    except Exception as e:
+        logging.error(f"Failed to generate input_with_urls.csv: {e}")
 
 if __name__ == "__main__":
     import argparse
