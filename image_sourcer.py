@@ -9,6 +9,7 @@ import time
 import re
 import random
 import json
+import traceback
 from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 
@@ -146,7 +147,10 @@ def find_and_save_image(product_name, sku, ua, output_dir=OUTPUT_DIR):
             logging.info(f"  No results for strategy: {desc}")
             continue
 
-        # Process Results
+        # Process Results - Find Best Match
+        best_candidate = None
+        best_score = 0
+
         for r in results:
             image_url = r.get('image')
             image_title = r.get('title')
@@ -154,47 +158,62 @@ def find_and_save_image(product_name, sku, ua, output_dir=OUTPUT_DIR):
             if not image_url or not image_title:
                  continue
             
-            # Fuzzy Match at 80%
-            score = fuzz.partial_ratio(product_name.lower(), image_title.lower()) if product_name else 100
+            # Fuzzy Match using token_set_ratio for better accuracy with reordered words
+            # e.g. "Apple Juice" matches "Juice Apple"
+            score = fuzz.token_set_ratio(product_name.lower(), image_title.lower()) if product_name else 100
             
-            if score >= 80 or not product_name:
-                if not product_name:
-                    logging.info(f"  No product name provided. Using first result for {sku}.")
-                else:
-                    logging.info(f"  Match Found ({score}%). Downloading...")
-                
-                try:
-                    status_msg = f"Downloading (SKU: {sku})" if not product_name else f"Downloading (Score: {score}%)"
-                    yield {'SKU': sku, 'Name': product_name, 'Status': 'Downloading', 'Message': status_msg}
-                    
-                    # Random delay before download
-                    time.sleep(random.uniform(1, 3))
-                    
-                    headers = {"User-Agent": ua.random}
-                    img_data = requests.get(image_url, headers=headers, timeout=30).content
-                    
-                    base_name = clean_filename(product_name) if product_name else sku
-                    filename = f"{base_name}.jpg"
-                    filepath = os.path.join(output_dir, filename)
-                    if os.path.exists(filepath):
-                            filename = f"{base_name}_{sku}.jpg"
-                            filepath = os.path.join(output_dir, filename)
-
-                    with open(filepath, 'wb') as handler:
-                        handler.write(img_data)
-                    
-                    # Success - Yield final result and Return (stop other strategies)
-                    # We return the dictionary here to signal completion of this item
-                    yield {'SKU': sku, 'status': 'Success', 'score': score if product_name else 100, 'file': filename, 'url': image_url, 'Name': product_name, 'Status': 'Success'}
-                    return
-                except Exception as e:
-                    logging.warning(f"  Download failed: {e}")
-                    # If download fails, maybe try next image in results? 
-                    # For now we continue to next image in this result set
-                    continue
+            if score >= 70 or not product_name:
+                logging.info(f"  Candidate found: {score}% - {image_title[:30]}...")
+                if score > best_score:
+                    best_score = score
+                    best_candidate = r
+                    best_candidate['score'] = score # Store score in result
             else:
                  # Low score
                  pass
+        
+        # Check if we found a suitable candidate in this strategy
+        if best_candidate:
+            image_url = best_candidate.get('image')
+            image_title = best_candidate.get('title')
+            score = best_candidate.get('score', 0)
+
+            if not product_name:
+                logging.info(f"  No product name provided. Using first result for {sku}.")
+            else:
+                logging.info(f"  BEST MATCH Found ({score}%): {image_title}")
+            
+            try:
+                status_msg = f"Downloading (SKU: {sku})" if not product_name else f"Downloading (Score: {score}%)"
+                yield {'SKU': sku, 'Name': product_name, 'Status': 'Downloading', 'Message': status_msg}
+                
+                # Random delay before download
+                time.sleep(random.uniform(1, 3))
+                
+                headers = {"User-Agent": ua.random}
+                img_data = requests.get(image_url, headers=headers, timeout=30).content
+                
+                base_name = clean_filename(product_name) if product_name else sku
+                filename = f"{base_name}.jpg"
+                filepath = os.path.join(output_dir, filename)
+                if os.path.exists(filepath):
+                        filename = f"{base_name}_{sku}.jpg"
+                        filepath = os.path.join(output_dir, filename)
+
+                with open(filepath, 'wb') as handler:
+                    logging.info(f"  Writing image file to {filepath}")
+                    handler.write(img_data)
+                    logging.info(f"  Image file written successfully")
+                
+                # Success - Yield final result and Return (stop other strategies)
+                # We return the dictionary here to signal completion of this item
+                yield {'SKU': sku, 'status': 'Success', 'score': score if product_name else 100, 'file': filename, 'url': image_url, 'Name': product_name, 'Status': 'Success'}
+                return
+            except Exception as e:
+                logging.warning(f"  Download failed: {e}")
+                # If download matches failed, we might want to try the NEXT best match?
+                # For now, if the best match fails to download, we continue to the next strategy
+                continue
         
         # If we get here, no suitable image was found in this strategy's results
         # Loop continues to next strategy
@@ -298,56 +317,59 @@ def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR, upload
         wp_status = 'Not Uploaded'
         wp_duplicate = False
         
-        if upload_to_wordpress and WP_AVAILABLE and final_result.get('Status') == 'Success':
-            filepath = os.path.join(output_dir, final_result.get('file', ''))
-            filename = final_result.get('file', '')
-            
-            # Check for duplicate in WordPress
-            yield {'SKU': sku, 'Name': name, 'Status': 'Checking WordPress', 'Message': 'Checking for duplicates...'}
-            existing_id = wordpress_api.check_duplicate(sku, filename)
-            
-            if existing_id:
-                # Duplicate found - reuse existing media
-                wp_media_id = existing_id
-                wp_status = 'Skipped (Duplicate)'
-                wp_duplicate = True
-                yield {'SKU': sku, 'Name': name, 'Status': 'Skipped (Duplicate)', 'Message': f'Reusing media ID {existing_id}'}
-            else:
-                # Upload to WordPress
-                yield {'SKU': sku, 'Name': name, 'Status': 'Uploading to WordPress', 'Message': 'Uploading...'}
-                wp_media_id = wordpress_api.upload_media(
-                    filepath,
-                    title=name or sku,
-                    alt_text=name or sku,
-                    caption=name or sku,
-                    description=f'Product image for {name or sku}'
-                )
+        try:
+            if upload_to_wordpress and WP_AVAILABLE and final_result.get('Status') == 'Success':
+                filepath = os.path.join(output_dir, final_result.get('file', ''))
+                filename = final_result.get('file', '')
                 
-                if wp_media_id:
-                    wp_status = 'Uploaded'
-                    
-                    # Find and assign to product
-                    yield {'SKU': sku, 'Name': name, 'Status': 'Assigning Image', 'Message': 'Finding product...'}
-                    post_id = wordpress_api.find_product_post(sku, name)
-                    
-                    if post_id:
-                        if wordpress_api.set_featured_image(post_id, wp_media_id):
-                            wp_status = 'Assigned'
-                            yield {'SKU': sku, 'Name': name, 'Status': 'Assigned', 'Message': f'Assigned to product {post_id}'}
-                        else:
-                            wp_status = 'Upload OK, Assign Failed'
-                    else:
-                        wp_status = 'Uploaded (No Product Found)'
-                        yield {'SKU': sku, 'Name': name, 'Status': 'Uploaded', 'Message': 'No matching product found'}
+                # Check for duplicate in WordPress
+                yield {'SKU': sku, 'Name': name, 'Status': 'Checking WordPress', 'Message': 'Checking for duplicates...'}
+                existing_id = wordpress_api.check_duplicate(sku, filename)
+                
+                if existing_id:
+                    # Duplicate found - reuse existing media
+                    wp_media_id = existing_id
+                    wp_status = 'Skipped (Duplicate)'
+                    wp_duplicate = True
+                    yield {'SKU': sku, 'Name': name, 'Status': 'Skipped (Duplicate)', 'Message': f'Reusing media ID {existing_id}'}
                 else:
-                    wp_status = 'Upload Failed'
-                    yield {'SKU': sku, 'Name': name, 'Status': 'Failed', 'Message': 'WordPress upload failed'}
+                    # Upload to WordPress
+                    yield {'SKU': sku, 'Name': name, 'Status': 'Uploading to WordPress', 'Message': 'Uploading...'}
+                    wp_media_id = wordpress_api.upload_media(
+                        filepath,
+                        title=name or sku,
+                        alt_text=name or sku,
+                        caption=name or sku,
+                        description=f'Product image for {name or sku}'
+                    )
+                    
+                    if wp_media_id:
+                        wp_status = 'Uploaded'
+                        
+                        # Find and assign to product
+                        yield {'SKU': sku, 'Name': name, 'Status': 'Assigning Image', 'Message': 'Finding product...'}
+                        post_id = wordpress_api.find_product_post(sku, name)
+                        
+                        if post_id:
+                            if wordpress_api.set_featured_image(post_id, wp_media_id):
+                                wp_status = 'Assigned'
+                                yield {'SKU': sku, 'Name': name, 'Status': 'Assigned', 'Message': f'Assigned to product {post_id}'}
+                            else:
+                                wp_status = 'Upload OK, Assign Failed'
+                        else:
+                            wp_status = 'Uploaded (No Product Found)'
+                            yield {'SKU': sku, 'Name': name, 'Status': 'Uploaded', 'Message': 'No matching product found'}
+                    else:
+                        wp_status = 'Upload Failed'
+                        yield {'SKU': sku, 'Name': name, 'Status': 'Failed', 'Message': 'WordPress upload failed'}
+        except Exception as e:
+            logging.error(f"Error in WordPress integration: {e}\n{traceback.format_exc()}")
+            yield {'SKU': sku, 'Name': name, 'Status': 'Error', 'Message': f"WP Error: {str(e)}"}
 
         # Immediate logging to file for robustness
         log_entry = {
             'SKU': sku,
             'Original Name': name,
-            'Similarity Score': final_result.get('score', 0),
             'Image Source URL': final_result.get('url', ''),
             'Saved Filename': final_result.get('file', ''),
             'Status': final_result['Status'],
@@ -360,16 +382,72 @@ def process_items(items, audit_log_path=AUDIT_LOG, output_dir=OUTPUT_DIR, upload
         try:
             log_df = pd.DataFrame([log_entry])
             header = not os.path.exists(audit_log_path)
+            logging.info(f"  Writing to audit log (Append Mode)...")
             log_df.to_csv(audit_log_path, mode='a', header=header, index=False)
+            logging.info(f"  Audit log written successfully")
         except Exception as e:
             logging.error(f"Failed to write to audit log: {e}")
         
         # Polite randomized delay between SKUs (3-7s)
         delay = random.uniform(3, 7)
-        # Yield a status update about the delay
-        yield {'SKU': sku, 'Name': name, 'Status': 'Waiting', 'Message': "downloaded"}
-        logging.info(f"Sleeping for {delay:.2f} seconds...")
-        time.sleep(delay)
+def update_csv_with_urls(input_csv_path=INPUT_CSV, audit_log_path=AUDIT_LOG, output_csv_path='input_with_urls.csv'):
+    """
+    Updates the input CSV with Image Source URL and Status from the audit log.
+    Matches items based on SKU.
+    """
+    try:
+        logging.info(f"Updating {output_csv_path} with image data...")
+        
+        if not os.path.exists(audit_log_path):
+            logging.warning(f"Audit log {audit_log_path} not found. Cannot update CSV.")
+            return
+
+        if not os.path.exists(input_csv_path):
+             logging.warning(f"Input CSV {input_csv_path} not found. Cannot update CSV.")
+             return
+
+        # Read Input and Log
+        df = pd.read_csv(input_csv_path)
+        log_df = pd.read_csv(audit_log_path)
+        
+        # Ensure SKU columns are strings and stripped for accurate matching
+        # Check if 'SKU' exists in both
+        if 'SKU' not in df.columns:
+            logging.error("Input CSV missing 'SKU' column.")
+            return
+        if 'SKU' not in log_df.columns:
+             logging.error("Audit log missing 'SKU' column.")
+             return
+
+        df['SKU'] = df['SKU'].astype(str).str.strip()
+        log_df['SKU'] = log_df['SKU'].astype(str).str.strip()
+        
+        # Deduplicate log, keeping the LAST attempt for each SKU (most recent status)
+        # We assume 'SKU' is the unique identifier. We don't really need 'Original Name' for deduping if SKU is unique.
+        log_df = log_df.drop_duplicates(subset=['SKU'], keep='last')
+        
+        # Select relevant columns from log to merge
+        # Map 'Saved Filename' and 'Image Source URL' and 'Status'
+        # The log file has columns: SKU, Original Name, Similarity Score, Image Source URL, Saved Filename, Status, ...
+        cols_to_merge = ['SKU', 'Image Source URL', 'Saved Filename', 'Status']
+        
+        # Filter log_df to only have columns that exist (just safety)
+        cols_to_merge = [c for c in cols_to_merge if c in log_df.columns]
+        
+        # Drop existing columns in df if they pretend to be the ones we are updating, to avoid suffix issues e.g. _x _y
+        for col in ['Image Source URL', 'Saved Filename', 'Status']:
+            if col in df.columns:
+                df = df.drop(columns=[col])
+
+        # Merge: Left join to keep all input rows, add info where available
+        merged_df = pd.merge(df, log_df[cols_to_merge], on='SKU', how='left')
+        
+        # Write to output file
+        merged_df.to_csv(output_csv_path, index=False)
+        logging.info(f"Successfully updated '{output_csv_path}'.")
+
+    except Exception as e:
+        logging.error(f"Failed to generate {output_csv_path}: {e}")
 
 def main(dry_run=False):
     try:
@@ -394,29 +472,8 @@ def main(dry_run=False):
 
     logging.info(f"Process complete.")
 
-    # Generate enhanced CSV with URLs
-    try:
-        logging.info("Generating input_with_urls.csv...")
-        # Read the latest log
-        if os.path.exists(AUDIT_LOG):
-            log_df = pd.read_csv(AUDIT_LOG)
-            # Deduplicate log, keeping last attempt for each SKU
-            log_df = log_df.drop_duplicates(subset=['SKU'], keep='last')
-            
-            # Merge with original input
-            # Ensure SKU columns are strings for merging
-            df['SKU'] = df['SKU'].astype(str).str.strip()
-            log_df['SKU'] = log_df['SKU'].astype(str).str.strip()
-            
-            # Merge: Left join to keep all input rows
-            merged_df = pd.merge(df, log_df[['SKU', 'Image Source URL', 'Saved Filename', 'Status']], on='SKU', how='left')
-            
-            merged_df.to_csv('input_with_urls.csv', index=False)
-            logging.info("Successfully created 'input_with_urls.csv' with image data.")
-        else:
-            logging.warning("No audit log found, cannot generate input_with_urls.csv")
-    except Exception as e:
-        logging.error(f"Failed to generate input_with_urls.csv: {e}")
+    # Generate enhanced CSV with URLs using the new function
+    update_csv_with_urls()
 
 if __name__ == "__main__":
     import argparse

@@ -79,9 +79,25 @@ def process():
 
     def generate():
         # Iterate over results from image_sourcer generator
+        import logging
+        logging.info(f"Starting process_items for {len(items)} items")
         for result in process_items(items, output_dir=output_dir, upload_to_wordpress=upload_to_wordpress):
             # Send as SSE
             yield f"data: {json.dumps(result)}\n\n"
+        
+        logging.info("Finished process_items generator")
+        
+        # Update the CSV with URLs now that processing is complete
+        try:
+            from image_sourcer import update_csv_with_urls
+            # We assume standard paths here as app.py likely runs in the same dir
+            # If explicit paths are needed, we might need to pass them or rely on defaults in image_sourcer
+            logging.info("Triggering CSV update from app.py...")
+            update_csv_with_urls()
+            yield f"data: {json.dumps({'Status': 'Info', 'Message': 'Updated input CSV with URLs'})}\n\n"
+        except Exception as e:
+            logging.error(f"Failed to update CSV from app: {e}")
+            yield f"data: {json.dumps({'Status': 'Error', 'Message': f'Failed to update CSV: {e}'})}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')
 
